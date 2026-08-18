@@ -87,6 +87,7 @@
         <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-list">📝 List</button></li>
         <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-chart">📈 Chart</button></li>
         <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-stats">📊 Stats</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-season">⚙️ Stagione</button></li>
     </ul>
 
     <div class="tab-content" id="pills-tabContent">
@@ -172,6 +173,49 @@
                 </div>
             </div>
         </div>
+
+        <div class="tab-pane fade" id="tab-season">
+            <div class="card p-3 mx-2">
+                <h6 class="mb-1">🔄 Soft Reset di fine stagione</h6>
+                <p class="small text-muted mb-3">Calcola l'Elo di partenza della stagione corrente (<span id="seasonTargetLabel" class="fw-bold"></span>) a partire dall'Elo finale di una stagione precedente, attenuato dal fattore k.</p>
+
+                <div class="mb-2">
+                    <label class="small fw-bold">Eredita Elo finale da:</label>
+                    <select id="seasonSourceSelector" class="form-select form-select-sm">
+                        <option value="matches">Torneo 2025/26 (Storico)</option>
+                        <option value="torneo_2026_2027">Nuovo Torneo 2026/27</option>
+                    </select>
+                </div>
+
+                <div class="formula-box text-center small fw-bold text-muted my-2" style="background:#f4f1ea; border-radius:8px; padding:8px;">
+                    nuovo_elo = media + k × (vecchio_elo − media)
+                </div>
+
+                <div class="d-flex align-items-center gap-2 mb-1">
+                    <label class="small fw-bold mb-0" style="white-space:nowrap;">Fattore k</label>
+                    <input type="range" id="kSlider" min="0" max="1" step="0.01" value="0.6" class="form-range flex-grow-1">
+                    <span id="kValueLabel" class="small fw-bold" style="min-width:38px; text-align:right;">0.60</span>
+                </div>
+                <div class="d-flex gap-1 mb-3">
+                    <button class="btn btn-sm btn-outline-secondary" onclick="setKPreset(0.5)">0.5</button>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="setKPreset(0.6)">0.6</button>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="setKPreset(0.75)">0.75</button>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="setKPreset(1)">1.0</button>
+                </div>
+
+                <div class="mb-3">
+                    <label class="small fw-bold">Elo medio di riferimento</label>
+                    <input type="number" id="mediaEloInput" class="form-control form-control-sm" value="1000" step="10">
+                </div>
+
+                <button class="btn btn-outline-success w-100 mb-2" onclick="anteprimaSoftReset()">👁️ Calcola anteprima</button>
+                <div id="softResetPreview"></div>
+
+                <button class="btn btn-success w-100 mt-2 fw-bold d-none" id="btnApplicaSoftReset" onclick="applicaSoftReset()">✅ Applica come Elo iniziali di <span id="seasonTargetLabel2"></span></button>
+
+                <p class="small text-muted mt-3 mb-0">⚠️ Questo imposta i punti di partenza per <b><span id="seasonTargetLabel3"></span></b>. Se quella stagione ha già partite giocate, l'intera catena Elo verrà ricalcolata da capo con i nuovi punti di partenza.</p>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -230,6 +274,116 @@ let dataTableInstance = null;
 let matchIdInModifica = null;
 let operazioneInCorso = false;
 
+// Elo di partenza per la stagione corrente: { "Nome Giocatore": eloIniziale }
+// Se un giocatore non compare qui, parte dal default 1000 (comportamento originale).
+let initialElo = {};
+let softResetAnteprima = null; // { risultati: [...], mediaEl, k, targetSeason }
+
+document.getElementById('seasonTargetLabel').innerText = currentSeason === 'matches' ? 'Torneo 2025/26' : 'Nuovo Torneo 2026/27';
+document.getElementById('seasonTargetLabel2').innerText = currentSeason === 'matches' ? 'Torneo 2025/26' : 'Nuovo Torneo 2026/27';
+document.getElementById('seasonTargetLabel3').innerText = currentSeason === 'matches' ? 'Torneo 2025/26' : 'Nuovo Torneo 2026/27';
+
+document.getElementById('kSlider').addEventListener('input', (e) => {
+    document.getElementById('kValueLabel').innerText = parseFloat(e.target.value).toFixed(2);
+});
+function setKPreset(k) {
+    document.getElementById('kSlider').value = k;
+    document.getElementById('kValueLabel').innerText = parseFloat(k).toFixed(2);
+}
+
+async function caricaEloIniziale() {
+    try {
+        const r = await fetch(`${DB_URL}/initial_elo/${currentSeason}.json`);
+        const data = await r.json();
+        initialElo = data || {};
+    } catch (e) {
+        initialElo = {};
+    }
+}
+
+/* Calcola l'Elo finale di ciascun giocatore in una data stagione (ultimo rank_dopo in ordine cronologico) */
+async function calcolaEloFinaleStagione(seasonKey) {
+    const r = await fetch(`${DB_URL}/${seasonKey}.json`);
+    if (!r.ok) throw new Error('Impossibile leggere la stagione ' + seasonKey);
+    const data = await r.json();
+    if (!data) return {};
+    const righe = Object.values(data).sort((a,b) => parseInt(a.id_partita) - parseInt(b.id_partita));
+    const eloFinale = {};
+    righe.forEach(r => { eloFinale[r.giocatore] = parseInt(r.rank_dopo); });
+    return eloFinale;
+}
+
+async function anteprimaSoftReset() {
+    const sourceSeason = document.getElementById('seasonSourceSelector').value;
+    const k = parseFloat(document.getElementById('kSlider').value);
+    const media = parseFloat(document.getElementById('mediaEloInput').value) || 1000;
+    const previewEl = document.getElementById('softResetPreview');
+    const btnApplica = document.getElementById('btnApplicaSoftReset');
+
+    previewEl.innerHTML = '<div class="text-muted small text-center py-2">Calcolo in corso...</div>';
+    btnApplica.classList.add('d-none');
+
+    try {
+        const eloFinale = await calcolaEloFinaleStagione(sourceSeason);
+        const nomi = Object.keys(eloFinale).sort();
+
+        if (nomi.length === 0) {
+            previewEl.innerHTML = '<div class="text-muted small text-center py-2">Nessuna partita trovata in quella stagione.</div>';
+            return;
+        }
+
+        const risultati = nomi.map(nome => {
+            const vecchio = eloFinale[nome];
+            const nuovo = Math.round(media + k * (vecchio - media));
+            return { nome, vecchio, nuovo, delta: nuovo - vecchio };
+        }).sort((a,b) => b.vecchio - a.vecchio);
+
+        let html = `<table class="table table-sm mb-0"><thead><tr>
+            <th>Giocatore</th><th class="text-end">Fine stagione</th><th class="text-end">Nuovo Elo</th><th class="text-end">Δ</th>
+        </tr></thead><tbody>`;
+        risultati.forEach(r => {
+            const cls = r.delta > 0 ? 'delta-pos' : (r.delta < 0 ? 'delta-neg' : '');
+            const segno = r.delta > 0 ? '+' : '';
+            html += `<tr><td>${r.nome}</td><td class="text-end">${r.vecchio}</td><td class="text-end fw-bold">${r.nuovo}</td><td class="text-end ${cls}">${segno}${r.delta}</td></tr>`;
+        });
+        html += '</tbody></table>';
+        previewEl.innerHTML = html;
+
+        softResetAnteprima = { risultati, media, k, sourceSeason };
+        btnApplica.classList.remove('d-none');
+    } catch (e) {
+        previewEl.innerHTML = '<div class="text-danger small text-center py-2">Errore nel calcolo. Riprova.</div>';
+    }
+}
+
+async function applicaSoftReset() {
+    if (!softResetAnteprima) return;
+    if (!confirm(`Impostare l'Elo iniziale di ${currentSeason === 'matches' ? 'Torneo 2025/26' : 'Nuovo Torneo 2026/27'} per ${softResetAnteprima.risultati.length} giocatori? La classifica di questa stagione verrà ricalcolata.`)) return;
+
+    mostraCaricamento(true);
+    try {
+        const payload = {};
+        softResetAnteprima.risultati.forEach(r => { payload[r.nome] = r.nuovo; });
+
+        const resp = await fetch(`${DB_URL}/initial_elo/${currentSeason}.json`, {
+            method: 'PUT',
+            body: JSON.stringify(payload)
+        });
+        if (!resp.ok) throw new Error('Scrittura fallita');
+
+        initialElo = payload;
+        await caricaDati(false);
+        await ricalcolaElo();
+        renderAll();
+        mostraToast('Elo iniziali applicati e classifica ricalcolata!', 'success');
+        document.getElementById('btnApplicaSoftReset').classList.add('d-none');
+    } catch (e) {
+        mostraToast('Errore durante il salvataggio degli Elo iniziali.', 'error');
+    } finally {
+        mostraCaricamento(false);
+    }
+}
+
 function cambiaStagione() {
     currentSeason = document.getElementById('seasonSelector').value;
     localStorage.setItem('catan_season_choice', currentSeason);
@@ -277,6 +431,7 @@ async function caricaDati(mostraOverlay = true) {
     if (mostraOverlay) mostraCaricamento(true);
     document.getElementById('status').innerText = "🔄 Caricamento dati...";
     try {
+        await caricaEloIniziale();
         const response = await fetch(`${DB_URL}/${currentSeason}.json`);
         if (!response.ok) throw new Error('HTTP ' + response.status);
         const data = await response.json();
@@ -361,7 +516,10 @@ function renderAll() {
         const eloNum = parseInt(p.rank_dopo);
         const punti = parseInt(p.punti);
 
-        if (!playerStats[p.giocatore]) playerStats[p.giocatore] = { elo: 1000, eloMax: 1000, games: 0, wins: 0, puntiTot: 0, streak: 0, streakMax: 0, puntiList: [] };
+        if (!playerStats[p.giocatore]) {
+            const eloBase = initialElo[p.giocatore] !== undefined ? initialElo[p.giocatore] : 1000;
+            playerStats[p.giocatore] = { elo: eloBase, eloMax: eloBase, games: 0, wins: 0, puntiTot: 0, streak: 0, streakMax: 0, puntiList: [] };
+        }
         const s = playerStats[p.giocatore];
         s.games++;
         s.elo = eloNum;
@@ -747,7 +905,7 @@ async function ricalcolaElo() {
         const stato = giocatoriMatch.map(p => ({
             rec: p,
             punti: parseInt(p.punti),
-            rP: eloMap[p.giocatore] !== undefined ? eloMap[p.giocatore] : 1000
+            rP: eloMap[p.giocatore] !== undefined ? eloMap[p.giocatore] : (initialElo[p.giocatore] !== undefined ? initialElo[p.giocatore] : 1000)
         }));
 
         stato.forEach(r1 => {
