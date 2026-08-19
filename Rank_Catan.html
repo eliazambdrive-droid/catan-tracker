@@ -220,6 +220,9 @@
 
                 <button class="btn btn-success w-100 mt-2 fw-bold d-none" id="btnApplicaSoftReset" onclick="applicaSoftReset()">✅ Applica come Elo iniziali di <span id="seasonTargetLabel2"></span></button>
 
+                <hr class="my-3">
+                <button class="btn btn-outline-danger w-100 btn-sm" onclick="rimuoviEloIniziale()">🗑️ Rimuovi Elo iniziali personalizzati da <span id="seasonTargetLabel4"></span> (torna a 1000 fissi)</button>
+
                 <p class="small text-muted mt-3 mb-0">⚠️ Questo imposta i punti di partenza per <b><span id="seasonTargetLabel3"></span></b>. Se quella stagione ha già partite giocate, l'intera catena Elo verrà ricalcolata da capo con i nuovi punti di partenza.</p>
             </div>
         </div>
@@ -289,6 +292,7 @@ let softResetAnteprima = null; // { risultati: [...], mediaEl, k, targetSeason }
 document.getElementById('seasonTargetLabel').innerText = currentSeason === 'matches' ? 'Torneo 2025/26' : 'Nuovo Torneo 2026/27';
 document.getElementById('seasonTargetLabel2').innerText = currentSeason === 'matches' ? 'Torneo 2025/26' : 'Nuovo Torneo 2026/27';
 document.getElementById('seasonTargetLabel3').innerText = currentSeason === 'matches' ? 'Torneo 2025/26' : 'Nuovo Torneo 2026/27';
+document.getElementById('seasonTargetLabel4').innerText = currentSeason === 'matches' ? 'Torneo 2025/26' : 'Nuovo Torneo 2026/27';
 
 document.getElementById('kSlider').addEventListener('input', (e) => {
     document.getElementById('kValueLabel').innerText = parseFloat(e.target.value).toFixed(1);
@@ -397,6 +401,31 @@ async function applicaSoftReset() {
         document.getElementById('btnApplicaSoftReset').classList.add('d-none');
     } catch (e) {
         mostraToast('Errore durante il salvataggio degli Elo iniziali.', 'error');
+    } finally {
+        mostraCaricamento(false);
+    }
+}
+
+async function rimuoviEloIniziale() {
+    const nomeStagione = currentSeason === 'matches' ? 'Torneo 2025/26' : 'Nuovo Torneo 2026/27';
+    if (!confirm(`Rimuovere gli Elo iniziali personalizzati da ${nomeStagione}? Tutti i giocatori torneranno a partire da 1000 e la classifica di questa stagione verrà ricalcolata.`)) return;
+
+    mostraCaricamento(true);
+    try {
+        const resp = await fetch(`${DB_URL}/initial_elo/${currentSeason}.json`, { method: 'DELETE' });
+        if (!resp.ok) throw new Error('Cancellazione fallita');
+
+        initialElo = {};
+        softResetAnteprima = null;
+        document.getElementById('softResetPreview').innerHTML = '';
+        document.getElementById('btnApplicaSoftReset').classList.add('d-none');
+
+        await caricaDati(false);
+        await ricalcolaElo();
+        renderAll();
+        mostraToast(`Elo iniziali di ${nomeStagione} rimossi, classifica ricalcolata da 1000.`, 'success');
+    } catch (e) {
+        mostraToast('Errore durante la rimozione.', 'error');
     } finally {
         mostraCaricamento(false);
     }
