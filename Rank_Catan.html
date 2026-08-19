@@ -208,6 +208,12 @@
                     <input type="number" id="mediaEloInput" class="form-control form-control-sm" value="1000" step="10">
                 </div>
 
+                <div class="mb-3">
+                    <label class="small fw-bold">Soglia affidabilità (partite) — C</label>
+                    <input type="number" id="cThresholdInput" class="form-control form-control-sm" value="8" min="1" step="1">
+                    <p class="small text-muted mb-0 mt-1">Chi ha giocato poche partite nella stagione precedente ha un k effettivo più basso (torna più vicino alla media, perché il suo Elo è meno affidabile). Chi supera abbondantemente questa soglia mantiene quasi tutto il k scelto sopra.</p>
+                </div>
+
                 <button class="btn btn-outline-success w-100 mb-2" onclick="anteprimaSoftReset()">👁️ Calcola anteprima</button>
                 <div id="softResetPreview"></div>
 
@@ -301,7 +307,7 @@ async function caricaEloIniziale() {
     }
 }
 
-/* Calcola l'Elo finale di ciascun giocatore in una data stagione (ultimo rank_dopo in ordine cronologico) */
+/* Calcola l'Elo finale e il numero di partite giocate da ciascun giocatore in una data stagione */
 async function calcolaEloFinaleStagione(seasonKey) {
     const r = await fetch(`${DB_URL}/${seasonKey}.json`);
     if (!r.ok) throw new Error('Impossibile leggere la stagione ' + seasonKey);
@@ -309,14 +315,23 @@ async function calcolaEloFinaleStagione(seasonKey) {
     if (!data) return {};
     const righe = Object.values(data).sort((a,b) => parseInt(a.id_partita) - parseInt(b.id_partita));
     const eloFinale = {};
-    righe.forEach(r => { eloFinale[r.giocatore] = parseInt(r.rank_dopo); });
-    return eloFinale;
+    const partiteCount = {};
+    righe.forEach(r => {
+        eloFinale[r.giocatore] = parseInt(r.rank_dopo);
+        partiteCount[r.giocatore] = (partiteCount[r.giocatore] || 0) + 1;
+    });
+    const risultato = {};
+    Object.keys(eloFinale).forEach(nome => {
+        risultato[nome] = { elo: eloFinale[nome], partite: partiteCount[nome] };
+    });
+    return risultato;
 }
 
 async function anteprimaSoftReset() {
     const sourceSeason = document.getElementById('seasonSourceSelector').value;
     const k = parseFloat(document.getElementById('kSlider').value);
     const media = parseFloat(document.getElementById('mediaEloInput').value) || 1000;
+    const C = parseFloat(document.getElementById('cThresholdInput').value) || 8;
     const previewEl = document.getElementById('softResetPreview');
     const btnApplica = document.getElementById('btnApplicaSoftReset');
 
@@ -324,8 +339,8 @@ async function anteprimaSoftReset() {
     btnApplica.classList.add('d-none');
 
     try {
-        const eloFinale = await calcolaEloFinaleStagione(sourceSeason);
-        const nomi = Object.keys(eloFinale).sort();
+        const dati = await calcolaEloFinaleStagione(sourceSeason);
+        const nomi = Object.keys(dati).sort();
 
         if (nomi.length === 0) {
             previewEl.innerHTML = '<div class="text-muted small text-center py-2">Nessuna partita trovata in quella stagione.</div>';
@@ -333,23 +348,25 @@ async function anteprimaSoftReset() {
         }
 
         const risultati = nomi.map(nome => {
-            const vecchio = eloFinale[nome];
-            const nuovo = Math.round(media + k * (vecchio - media));
-            return { nome, vecchio, nuovo, delta: nuovo - vecchio };
+            const vecchio = dati[nome].elo;
+            const partite = dati[nome].partite;
+            const kEff = k * (partite / (partite + C));
+            const nuovo = Math.round(media + kEff * (vecchio - media));
+            return { nome, vecchio, partite, kEff, nuovo, delta: nuovo - vecchio };
         }).sort((a,b) => b.vecchio - a.vecchio);
 
         let html = `<table class="table table-sm mb-0"><thead><tr>
-            <th>Giocatore</th><th class="text-end">Fine stagione</th><th class="text-end">Nuovo Elo</th><th class="text-end">Δ</th>
+            <th>Giocatore</th><th class="text-end">Partite</th><th class="text-end">Fine stagione</th><th class="text-end">k eff.</th><th class="text-end">Nuovo Elo</th><th class="text-end">Δ</th>
         </tr></thead><tbody>`;
         risultati.forEach(r => {
             const cls = r.delta > 0 ? 'delta-pos' : (r.delta < 0 ? 'delta-neg' : '');
             const segno = r.delta > 0 ? '+' : '';
-            html += `<tr><td>${r.nome}</td><td class="text-end">${r.vecchio}</td><td class="text-end fw-bold">${r.nuovo}</td><td class="text-end ${cls}">${segno}${r.delta}</td></tr>`;
+            html += `<tr><td>${r.nome}</td><td class="text-end">${r.partite}</td><td class="text-end">${r.vecchio}</td><td class="text-end text-muted">${r.kEff.toFixed(2)}</td><td class="text-end fw-bold">${r.nuovo}</td><td class="text-end ${cls}">${segno}${r.delta}</td></tr>`;
         });
         html += '</tbody></table>';
         previewEl.innerHTML = html;
 
-        softResetAnteprima = { risultati, media, k, sourceSeason };
+        softResetAnteprima = { risultati, media, k, C, sourceSeason };
         btnApplica.classList.remove('d-none');
     } catch (e) {
         previewEl.innerHTML = '<div class="text-danger small text-center py-2">Errore nel calcolo. Riprova.</div>';
