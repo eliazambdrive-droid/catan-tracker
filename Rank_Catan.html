@@ -188,23 +188,24 @@
                 </div>
 
                 <div class="formula-box text-center small fw-bold text-muted my-2" style="background:#f4f1ea; border-radius:8px; padding:8px;">
-                    nuovo_elo = media + k × (vecchio_elo − media)
+                    nuovo_elo = base + affidabilità × (vecchio_elo ÷ K)
                 </div>
 
                 <div class="d-flex align-items-center gap-2 mb-1">
-                    <label class="small fw-bold mb-0" style="white-space:nowrap;">Fattore k</label>
-                    <input type="range" id="kSlider" min="0" max="1" step="0.01" value="0.6" class="form-range flex-grow-1">
-                    <span id="kValueLabel" class="small fw-bold" style="min-width:38px; text-align:right;">0.60</span>
+                    <label class="small fw-bold mb-0" style="white-space:nowrap;">Fattore K (divisore)</label>
+                    <input type="range" id="kSlider" min="1" max="100" step="1" value="10" class="form-range flex-grow-1">
+                    <span id="kValueLabel" class="small fw-bold" style="min-width:38px; text-align:right;">10.0</span>
                 </div>
                 <div class="d-flex gap-1 mb-3">
-                    <button class="btn btn-sm btn-outline-secondary" onclick="setKPreset(0.5)">0.5</button>
-                    <button class="btn btn-sm btn-outline-secondary" onclick="setKPreset(0.6)">0.6</button>
-                    <button class="btn btn-sm btn-outline-secondary" onclick="setKPreset(0.75)">0.75</button>
-                    <button class="btn btn-sm btn-outline-secondary" onclick="setKPreset(1)">1.0</button>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="setKPreset(5)">5</button>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="setKPreset(10)">10</button>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="setKPreset(25)">25</button>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="setKPreset(50)">50</button>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="setKPreset(100)">100</button>
                 </div>
 
                 <div class="mb-3">
-                    <label class="small fw-bold">Elo medio di riferimento</label>
+                    <label class="small fw-bold">Elo base di partenza</label>
                     <input type="number" id="mediaEloInput" class="form-control form-control-sm" value="1000" step="10">
                 </div>
 
@@ -290,11 +291,11 @@ document.getElementById('seasonTargetLabel2').innerText = currentSeason === 'mat
 document.getElementById('seasonTargetLabel3').innerText = currentSeason === 'matches' ? 'Torneo 2025/26' : 'Nuovo Torneo 2026/27';
 
 document.getElementById('kSlider').addEventListener('input', (e) => {
-    document.getElementById('kValueLabel').innerText = parseFloat(e.target.value).toFixed(2);
+    document.getElementById('kValueLabel').innerText = parseFloat(e.target.value).toFixed(1);
 });
 function setKPreset(k) {
     document.getElementById('kSlider').value = k;
-    document.getElementById('kValueLabel').innerText = parseFloat(k).toFixed(2);
+    document.getElementById('kValueLabel').innerText = parseFloat(k).toFixed(1);
 }
 
 async function caricaEloIniziale() {
@@ -329,8 +330,8 @@ async function calcolaEloFinaleStagione(seasonKey) {
 
 async function anteprimaSoftReset() {
     const sourceSeason = document.getElementById('seasonSourceSelector').value;
-    const k = parseFloat(document.getElementById('kSlider').value);
-    const media = parseFloat(document.getElementById('mediaEloInput').value) || 1000;
+    const K = parseFloat(document.getElementById('kSlider').value) || 1;
+    const base = parseFloat(document.getElementById('mediaEloInput').value) || 1000;
     const C = parseFloat(document.getElementById('cThresholdInput').value) || 8;
     const previewEl = document.getElementById('softResetPreview');
     const btnApplica = document.getElementById('btnApplicaSoftReset');
@@ -350,23 +351,23 @@ async function anteprimaSoftReset() {
         const risultati = nomi.map(nome => {
             const vecchio = dati[nome].elo;
             const partite = dati[nome].partite;
-            const kEff = k * (partite / (partite + C));
-            const nuovo = Math.round(media + kEff * (vecchio - media));
-            return { nome, vecchio, partite, kEff, nuovo, delta: nuovo - vecchio };
+            const affidabilita = partite / (partite + C);
+            const nuovo = Math.round(base + affidabilita * (vecchio / K));
+            return { nome, vecchio, partite, affidabilita, nuovo, delta: nuovo - vecchio };
         }).sort((a,b) => b.vecchio - a.vecchio);
 
         let html = `<table class="table table-sm mb-0"><thead><tr>
-            <th>Giocatore</th><th class="text-end">Partite</th><th class="text-end">Fine stagione</th><th class="text-end">k eff.</th><th class="text-end">Nuovo Elo</th><th class="text-end">Δ</th>
+            <th>Giocatore</th><th class="text-end">Partite</th><th class="text-end">Fine stagione</th><th class="text-end">Affid.</th><th class="text-end">Nuovo Elo</th><th class="text-end">Δ</th>
         </tr></thead><tbody>`;
         risultati.forEach(r => {
             const cls = r.delta > 0 ? 'delta-pos' : (r.delta < 0 ? 'delta-neg' : '');
             const segno = r.delta > 0 ? '+' : '';
-            html += `<tr><td>${r.nome}</td><td class="text-end">${r.partite}</td><td class="text-end">${r.vecchio}</td><td class="text-end text-muted">${r.kEff.toFixed(2)}</td><td class="text-end fw-bold">${r.nuovo}</td><td class="text-end ${cls}">${segno}${r.delta}</td></tr>`;
+            html += `<tr><td>${r.nome}</td><td class="text-end">${r.partite}</td><td class="text-end">${r.vecchio}</td><td class="text-end text-muted">${r.affidabilita.toFixed(2)}</td><td class="text-end fw-bold">${r.nuovo}</td><td class="text-end ${cls}">${segno}${r.delta}</td></tr>`;
         });
         html += '</tbody></table>';
         previewEl.innerHTML = html;
 
-        softResetAnteprima = { risultati, media, k, C, sourceSeason };
+        softResetAnteprima = { risultati, base, K, C, sourceSeason };
         btnApplica.classList.remove('d-none');
     } catch (e) {
         previewEl.innerHTML = '<div class="text-danger small text-center py-2">Errore nel calcolo. Riprova.</div>';
