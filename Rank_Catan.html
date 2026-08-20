@@ -175,6 +175,24 @@
         </div>
 
         <div class="tab-pane fade" id="tab-season">
+            <div class="card p-3 mx-2 mb-3">
+                <h6 class="mb-1">🎛️ Parametri del motore Elo</h6>
+                <p class="small text-muted mb-3">Questi valori governano il calcolo Elo in <b>tutte</b> le stagioni (sono globali). Premendo salva, la classifica della stagione <b>attualmente aperta</b> viene ricalcolata subito; le altre stagioni useranno i nuovi valori al prossimo caricamento.</p>
+
+                <div class="row g-2 mb-2">
+                    <div class="col-6">
+                        <label class="small fw-bold">K (peso competitivo)</label>
+                        <input type="number" id="kFactorInput" class="form-control form-control-sm" value="25" step="1" min="1">
+                    </div>
+                    <div class="col-6">
+                        <label class="small fw-bold">Bonus Elo per punto</label>
+                        <input type="number" id="bonusPuntoInput" class="form-control form-control-sm" value="0.6" step="0.1" min="0">
+                    </div>
+                </div>
+                <p class="small text-muted mb-2">K alto = differenze tra giocatori più marcate in base a chi batti e con che margine. Bonus alto = chi gioca tante partite accumula Elo indipendentemente dal risultato.</p>
+                <button class="btn btn-primary w-100 btn-sm" onclick="salvaConfigMotore()">💾 Salva e ricalcola tutto</button>
+            </div>
+
             <div class="card p-3 mx-2">
                 <h6 class="mb-1">🔄 Soft Reset di fine stagione</h6>
                 <p class="small text-muted mb-3">Calcola l'Elo di partenza della stagione corrente (<span id="seasonTargetLabel" class="fw-bold"></span>) a partire dall'Elo finale di una stagione precedente, attenuato dal fattore k.</p>
@@ -225,6 +243,12 @@
 
                 <p class="small text-muted mt-3 mb-0">⚠️ Questo imposta i punti di partenza per <b><span id="seasonTargetLabel3"></span></b>. Se quella stagione ha già partite giocate, l'intera catena Elo verrà ricalcolata da capo con i nuovi punti di partenza.</p>
             </div>
+            <div class="card p-3 mx-2 mt-3">
+                <h6 class="mb-1">📥 Importa partite in blocco</h6>
+                <p class="small text-muted mb-2">Carica l'elenco delle 50 partite fornite nella stagione attualmente selezionata (<span id="seasonTargetLabel5"></span>). Le partite vengono aggiunte con nuovi ID, senza cancellare quelle già presenti.</p>
+                <button class="btn btn-outline-primary w-100" onclick="importaPartiteBulk()">📥 Importa le 50 partite</button>
+                <div id="importBulkStatus" class="small text-muted text-center mt-2"></div>
+            </div>
         </div>
     </div>
 </div>
@@ -272,7 +296,8 @@
 
 <script>
 const DB_URL = "https://catantraker-default-rtdb.europe-west1.firebasedatabase.app/"; 
-const K_FACTOR = 25;
+let K_FACTOR = 25;
+let BONUS_PER_PUNTO = 0.6; // Elo garantito per ogni punto vittoria fatto, indipendentemente dal risultato
 
 // Gestione Stagione
 let currentSeason = localStorage.getItem('catan_season_choice') || "matches";
@@ -293,6 +318,7 @@ document.getElementById('seasonTargetLabel').innerText = currentSeason === 'matc
 document.getElementById('seasonTargetLabel2').innerText = currentSeason === 'matches' ? 'Torneo 2025/26' : 'Nuovo Torneo 2026/27';
 document.getElementById('seasonTargetLabel3').innerText = currentSeason === 'matches' ? 'Torneo 2025/26' : 'Nuovo Torneo 2026/27';
 document.getElementById('seasonTargetLabel4').innerText = currentSeason === 'matches' ? 'Torneo 2025/26' : 'Nuovo Torneo 2026/27';
+document.getElementById('seasonTargetLabel5').innerText = currentSeason === 'matches' ? 'Torneo 2025/26' : 'Nuovo Torneo 2026/27';
 
 document.getElementById('kSlider').addEventListener('input', (e) => {
     document.getElementById('kValueLabel').innerText = parseFloat(e.target.value).toFixed(1);
@@ -309,6 +335,51 @@ async function caricaEloIniziale() {
         initialElo = data || {};
     } catch (e) {
         initialElo = {};
+    }
+}
+
+async function caricaConfigMotore() {
+    try {
+        const r = await fetch(`${DB_URL}/engine_config.json`);
+        const data = await r.json();
+        if (data) {
+            if (typeof data.k_factor === 'number') K_FACTOR = data.k_factor;
+            if (typeof data.bonus_per_punto === 'number') BONUS_PER_PUNTO = data.bonus_per_punto;
+        }
+    } catch (e) { /* usa i default */ }
+    const kInput = document.getElementById('kFactorInput');
+    const bInput = document.getElementById('bonusPuntoInput');
+    if (kInput) kInput.value = K_FACTOR;
+    if (bInput) bInput.value = BONUS_PER_PUNTO;
+}
+
+async function salvaConfigMotore() {
+    const nuovoK = parseFloat(document.getElementById('kFactorInput').value);
+    const nuovoBonus = parseFloat(document.getElementById('bonusPuntoInput').value);
+    if (isNaN(nuovoK) || nuovoK <= 0 || isNaN(nuovoBonus) || nuovoBonus < 0) {
+        mostraToast('Valori non validi.', 'error');
+        return;
+    }
+    if (!confirm(`Impostare K=${nuovoK} e Bonus/punto=${nuovoBonus}? L'intera classifica di tutte le stagioni caricate verrà ricalcolata con questi valori.`)) return;
+
+    mostraCaricamento(true);
+    try {
+        const resp = await fetch(`${DB_URL}/engine_config.json`, {
+            method: 'PUT',
+            body: JSON.stringify({ k_factor: nuovoK, bonus_per_punto: nuovoBonus })
+        });
+        if (!resp.ok) throw new Error('Scrittura fallita');
+
+        K_FACTOR = nuovoK;
+        BONUS_PER_PUNTO = nuovoBonus;
+
+        await ricalcolaElo();
+        renderAll();
+        mostraToast('Parametri del motore aggiornati e classifica ricalcolata!', 'success');
+    } catch (e) {
+        mostraToast('Errore durante il salvataggio dei parametri.', 'error');
+    } finally {
+        mostraCaricamento(false);
     }
 }
 
@@ -431,6 +502,98 @@ async function rimuoviEloIniziale() {
     }
 }
 
+/* Elenco delle 50 partite fornite dall'utente per la reintegrazione della stagione */
+const PARTITE_DA_IMPORTARE = [
+["2025-08-06","Base",[["Chiara",10],["Davide",8],["Elia",9]]],
+["2025-08-07","Città e Cavalieri",[["Beppe",9],["Chiara",13],["Elia",11]]],
+["2025-08-12","Base",[["Beppe",5],["Chiara",5],["Elia",10],["Luca",6]]],
+["2025-08-12","CeC + Marinai",[["Beppe",9],["Chiara",13],["Elia",5]]],
+["2025-08-12","CeC + Marinai",[["Beppe",12],["Chiara",17],["Elia",9]]],
+["2025-08-15","Base",[["Elia",10],["Chiara",5],["Matteo",4]]],
+["2025-08-15","Base",[["Elia",8],["Chiara",10],["Matteo",8]]],
+["2025-08-22","Base",[["Elia",4],["Chiara",4],["Matteo",3],["Chiarina",10]]],
+["2025-08-24","Base",[["Davide",10],["Chiara",8],["Elia",6]]],
+["2025-08-31","Base",[["Elia",6],["Beppe",10],["Chiara",6],["Giulia",7]]],
+["2025-09-07","Marinai",[["Elia",14],["Beppe",12],["Chiara",12]]],
+["2025-09-07","Base",[["Elia",10],["Beppe",9],["Chiara",7]]],
+["2025-09-14","Base",[["Chiara",10],["Elia",6],["Faz",6]]],
+["2025-09-17","Città e Cavalieri",[["Beppe",13],["Chiara",9],["Elia",8]]],
+["2025-09-17","Base",[["Elia",10],["Beppe",5],["Chiara",4]]],
+["2025-09-19","Città e Cavalieri",[["Beppe",14],["Chiara",11],["Elia",12]]],
+["2025-09-20","Base",[["Elia",10],["Chiarina",6],["Chiara",6],["Matteo",8]]],
+["2025-10-05","Base",[["Beppe",10],["Chiara",6],["Elia",5]]],
+["2025-10-07","Marinai",[["Elia",10],["Beppe",9],["Chiara",8],["Tonno",9]]],
+["2025-10-08","Base",[["Tonno",10],["Chiara",9],["Beppe",9],["Elia",8]]],
+["2025-10-12","Città e Cavalieri",[["Elia",8],["Beppe",13],["Chiara",10]]],
+["2025-10-21","Città e Cavalieri",[["Chiara",13],["Beppe",11],["Elia",6]]],
+["2025-10-21","Città e Cavalieri",[["Elia",12],["Beppe",11],["Chiara",13]]],
+["2025-10-25","Città e Cavalieri",[["Elia",13],["Chiara",9],["Beppe",4]]],
+["2025-10-25","Base",[["Beppe",8],["Chiara",6],["Elia",10]]],
+["2025-11-04","Base",[["Beppe",10],["Elia",5],["Giulia",6],["Chiara",3]]],
+["2025-11-05","Marinai",[["Chiara",11],["Elia",10],["Beppe",7]]],
+["2025-11-13","Città e Cavalieri",[["Beppe",13],["Chiara",9],["Elia",8]]],
+["2025-11-13","Città e Cavalieri",[["Elia",8],["Chiara",7],["Beppe",13]]],
+["2025-12-21","Base",[["Elia",10],["Davide",7],["Chiara",6]]],
+["2025-12-21","Base",[["Davide",10],["Elia",9],["Chiara",7]]],
+["2026-01-16","Base",[["Elia",10],["Giorgio",5],["Chiara",5],["Marti",4]]],
+["2026-01-17","Base",[["Marti",7],["Giorgio",10],["Elia",6],["Chiara",6]]],
+["2026-01-23","Città e Cavalieri",[["Beppe",13],["Chiara",9],["Elia",8]]],
+["2026-01-24","Base",[["Elia",10],["Chiara",7],["Beppe",7]]],
+["2026-01-31","Città e Cavalieri",[["Beppe",9],["Chiara",13],["Elia",7]]],
+["2026-02-01","Città e Cavalieri",[["Elia",13],["Beppe",9],["Chiara",7]]],
+["2026-02-01","Base",[["Elia",10],["Chiara",6],["Beppe",7]]],
+["2026-02-06","Base",[["Giorgio",10],["Marti",6],["Elia",6],["Chiara",4]]],
+["2026-02-06","Base",[["Chiara",5],["Elia",10],["Giorgio",6],["Marti",4]]],
+["2026-02-07","Città e Cavalieri",[["Chiara",12],["Beppe",10],["Elia",6]]],
+["2026-02-07","Città e Cavalieri",[["Elia",11],["Chiara",12],["Beppe",7]]],
+["2026-02-08","Città e Cavalieri",[["Beppe",10],["Elia",13],["Chiara",9]]],
+["2026-03-14","Città e Cavalieri",[["Beppe",13],["Chiara",11],["Elia",9]]],
+["2026-03-15","Città e Cavalieri",[["Elia",13],["Chiara",11],["Beppe",8]]],
+["2026-03-20","Città e Cavalieri",[["Beppe",13],["Elia",12],["Giorgio",9]]],
+["2026-03-21","Città e Cavalieri",[["Beppe",13],["Giorgio",12],["Elia",10]]],
+["2026-05-17","Città e Cavalieri",[["Chiara",13],["Elia",11],["Beppe",11]]],
+["2026-07-28","Città e Cavalieri",[["Chiara",13],["Elia",7],["Beppe",6]]],
+["2026-07-28","Città e Cavalieri",[["Elia",13],["Beppe",7],["Chiara",7]]]
+];
+
+async function importaPartiteBulk() {
+    const nomeStagione = currentSeason === 'matches' ? 'Torneo 2025/26' : 'Nuovo Torneo 2026/27';
+    if (!confirm(`Importare ${PARTITE_DA_IMPORTARE.length} partite in "${nomeStagione}"? Verranno aggiunte come nuove partite, senza toccare quelle già presenti.`)) return;
+
+    const statusEl = document.getElementById('importBulkStatus');
+    mostraCaricamento(true);
+    try {
+        let lastID = 0;
+        tutteLePartite.forEach(p => { if (parseInt(p.id_partita) > lastID) lastID = parseInt(p.id_partita); });
+
+        let contatore = 0;
+        for (const [data, esp, giocatori] of PARTITE_DA_IMPORTARE) {
+            const newID = ++lastID;
+            for (const [nome, punti] of giocatori) {
+                const r = await fetch(`${DB_URL}/${currentSeason}.json`, {
+                    method: 'POST',
+                    body: JSON.stringify({ id_partita: newID, data: data, giocatore: nome, punti: punti, esp: esp, rank_prima: 1000, delta: 0, rank_dopo: 1000 })
+                });
+                if (!r.ok) throw new Error('Creazione record fallita');
+            }
+            contatore++;
+            statusEl.innerText = `Importate ${contatore}/${PARTITE_DA_IMPORTARE.length} partite...`;
+        }
+
+        await caricaDati(false);
+        await ricalcolaElo();
+        renderAll();
+        statusEl.innerText = '';
+        mostraToast(`${PARTITE_DA_IMPORTARE.length} partite importate e classifica ricalcolata!`, 'success');
+    } catch (e) {
+        statusEl.innerText = '';
+        mostraToast('Errore durante l\'importazione. Alcune partite potrebbero essere state inserite parzialmente.', 'error');
+        await caricaDati(false);
+    } finally {
+        mostraCaricamento(false);
+    }
+}
+
 function cambiaStagione() {
     currentSeason = document.getElementById('seasonSelector').value;
     localStorage.setItem('catan_season_choice', currentSeason);
@@ -479,6 +642,7 @@ async function caricaDati(mostraOverlay = true) {
     document.getElementById('status').innerText = "🔄 Caricamento dati...";
     try {
         await caricaEloIniziale();
+        await caricaConfigMotore();
         const response = await fetch(`${DB_URL}/${currentSeason}.json`);
         if (!response.ok) throw new Error('HTTP ' + response.status);
         const data = await response.json();
@@ -884,8 +1048,11 @@ function confrontaGiocatori() {
         const nAvversari = m.nGiocatori - 1;
         if (nAvversari > 0) {
             const attesoA = 1 / (1 + Math.pow(10, (m.rPB - m.rPA) / 400));
-            const realeA = m.puntiA > m.puntiB ? 1 : (m.puntiA < m.puntiB ? 0 : 0.5);
-            eloScambiatoA += (K_FACTOR / nAvversari) * (realeA - attesoA);
+            let realeA, mov;
+            if (m.puntiA === m.puntiB) { realeA = 0.5; mov = 1; }
+            else if (m.puntiA > m.puntiB) { realeA = 1; mov = movMultiplier(m.puntiA - m.puntiB, m.rPA - m.rPB); }
+            else { realeA = 0; mov = movMultiplier(m.puntiB - m.puntiA, m.rPB - m.rPA); }
+            eloScambiatoA += (K_FACTOR / nAvversari) * mov * (realeA - attesoA);
         }
     });
 
@@ -942,6 +1109,13 @@ function confrontaGiocatori() {
 /* ---------- Ricalcolo Elo (usato dopo add / modifica / elimina) ---------- */
 /* Ricalcola l'intera catena Elo in ordine cronologico e scrive su Firebase
    solo i record il cui rank_prima / delta / rank_dopo risultano cambiati. */
+/* Fattore che pesa il margine di vittoria (punti) e la "sorpresa" (differenza Elo tra vincitore e perdente) */
+function movMultiplier(puntiDiff, eloDiffVincitore) {
+    const base = Math.log(puntiDiff + 1) / Math.log(4);
+    const fattoreElo = 2.2 / Math.max(0.001 * eloDiffVincitore + 2.2, 0.8);
+    return base * fattoreElo;
+}
+
 async function ricalcolaElo() {
     const matchIds = [...new Set(tutteLePartite.map(p => parseInt(p.id_partita)))].sort((a,b) => a-b);
     const eloMap = {};
@@ -962,11 +1136,21 @@ async function ricalcolaElo() {
                 stato.forEach(r2 => {
                     if (r1.rec.fbKey === r2.rec.fbKey) return;
                     const att = 1 / (1 + Math.pow(10, (r2.rP - r1.rP) / 400));
-                    const re = r1.punti > r2.punti ? 1 : (r1.punti < r2.punti ? 0 : 0.5);
-                    sumD += (K_FACTOR / nAvversari) * (re - att);
+                    let re, mov;
+                    if (r1.punti === r2.punti) {
+                        re = 0.5; mov = 1;
+                    } else if (r1.punti > r2.punti) {
+                        re = 1;
+                        mov = movMultiplier(r1.punti - r2.punti, r1.rP - r2.rP);
+                    } else {
+                        re = 0;
+                        mov = movMultiplier(r2.punti - r1.punti, r2.rP - r1.rP);
+                    }
+                    sumD += (K_FACTOR / nAvversari) * mov * (re - att);
                 });
             }
-            const d = Math.round(sumD);
+            const bonusPartecipazione = r1.punti * BONUS_PER_PUNTO;
+            const d = Math.round(sumD + bonusPartecipazione);
             const nuovoDopo = r1.rP + d;
 
             if (parseInt(r1.rec.rank_prima) !== r1.rP || parseInt(r1.rec.delta) !== d || parseInt(r1.rec.rank_dopo) !== nuovoDopo) {
